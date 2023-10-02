@@ -3,12 +3,23 @@ import numpy as np
 import openai
 import os
 
+task_factory = {
+    'housing': "whether the median price of a housing block is greater than $200,000",
+    'medical': "whether a person in this hospital died",
+    'titanic': 'whether a passenger on the Titanic survived',
+    'weather': 'whether a city is in North America based on its weather patterns',
+    'wine': 'whether a wine is of high quality based on its chemical properties',
+    'abalone': 'whether an abalone is over 11 years old based on its physical properties',
+    'glass': 'whether a piece of glass was manufactured for building windows or vehicle windows based on its chemical properties',
+    'diabetes': 'whether a person has diabetes based on certain diagnostic measurements',
+}
+
 class DecisionTree:
-    def __init__(self, training_data, max_depth, lm=False):
+    def __init__(self, training_data, max_depth, task_name, lm=False):
         self.training_data = training_data
         self.max_depth = max_depth
         self.lm = lm
-        self.classification_task = 'which housing blocks have median home price greater than $200,000.'
+        self.classification_task = task_factory[task_name]
         self.chat = GPT()
         self.root = self.build_tree_iterative(self.training_data)
 
@@ -48,7 +59,8 @@ class DecisionTree:
 
     def get_value(self, data, feature):
         unique_values = sorted(list(data[feature].unique()))
-        best_gain = 0
+        # print('unique values:', unique_values)
+        best_gain = -float('inf')
         best_value = None
         original_entropy = self.entropy(data['label'])
         for value in unique_values:
@@ -59,9 +71,11 @@ class DecisionTree:
             if gain > best_gain:
                 best_gain = gain
                 best_value = value
+        # print('best value:', best_value)
+        # print()
         return best_value
 
-    def build_tree_recursive(self, data, depth=0, lm=True):
+    def build_tree_recursive(self, data, depth=0):
         if len(data['label'].unique()) == 1:
             return self.Node(result=data['label'].iloc[0])
 
@@ -93,7 +107,6 @@ class DecisionTree:
         self.root = self.Node()
         stack = [(self.root, data, 0)]
         while stack:
-            self.print_tree(self.root)
             current_node, current_data, current_depth = stack.pop()
             # Base cases
             if len(current_data['label'].unique()) == 1:
@@ -117,9 +130,6 @@ class DecisionTree:
                         continue
             else:
                 best_feature = self.get_feature(current_data)
-            if best_feature is None:
-                current_node.result = current_data['label'].value_counts().idxmax()
-                continue
             best_value = self.get_value(current_data, best_feature)
             left_data = current_data[current_data[best_feature] <= best_value]
             right_data = current_data[current_data[best_feature] > best_value]
@@ -142,7 +152,7 @@ class DecisionTree:
         
         if node.result is not None:
             return node.result
-
+        # print(node.feature, node.value)
         if test_point[node.feature] <= node.value:
             return self.predict(test_point, node.left)
         else:
@@ -163,9 +173,9 @@ class DecisionTree:
             buffer.append((' ' * depth + highlight + f"Result: {node.result}"))
         else:
             if node.feature is not None:
-                buffer.append((' ' * depth + highlight + f"{node.feature} < {node.value}"))
+                buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}"))
                 self.print_tree(node.left, depth+2, buffer, current_node)
-                buffer.append((' ' * depth + highlight + f"{node.feature} >= {node.value}"))
+                buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}"))
                 self.print_tree(node.right, depth+2, buffer, current_node)
             else:
                 buffer.append((' ' * depth + highlight + "Split on ?"))
@@ -191,13 +201,22 @@ class DecisionTree:
         prompt = ''
         prompt += 'You are trying to classify {}.'.format(self.classification_task)
         prompt += '\n'
-        prompt += f"Given the current tree state:\n{tree_state}\n\n"
-        prompt += f"And a dataset with features {[col for col in list(data.columns) if col != 'label']} and label distribution {data['label'].value_counts().to_dict()}, which feature should we split on next?"
+        prompt += f"Given the current tree state:\n{tree_state}\n"
+        prompt += f"and a dataset with features {[col for col in list(data.columns) if col != 'label']} and label distribution {data['label'].value_counts().to_dict()}, which feature should we split on next?"
         prompt += '\n'
         prompt += 'Consider which features you think are most important to the classification task. If the feature has already been used in the decision tree, you should be less likely to use it again.'
         prompt += '\n'
         prompt += 'Explain you reasoning in one or two sentences, and then provide the feature name. Make sure the feature name matches one of the features contained in the feature list. Your response should end with "Feature: <feature>". If you do not follow the response format, someone will die.'
         return prompt
+    
+    def list_features(self, features=[], node='root'):
+        if node == 'root':
+            node = self.root
+        if node is not None:
+            return features + [node.feature for node in [node] if node.feature is not None] + self.list_features(features, node.left) + self.list_features(features, node.right)
+        else:
+            return features
+
 
 class GPT():
     def __init__(self):
