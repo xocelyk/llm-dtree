@@ -24,12 +24,23 @@ class DecisionTree:
         self.root = self.build_tree_iterative(self.training_data)
 
     class Node:
-        def __init__(self, feature=None, value=None, left=None, right=None, result=None):
+        def __init__(self, feature=None, value=None, left=None, right=None, result=None, proba=None):
             self.feature = feature
             self.value = value
             self.left = left
             self.right = right
             self.result = result
+            self.proba = proba
+
+    def get_proba(self, data):
+        # proba is proportion of data that has label 1
+        if len(data) == 0:
+            return 0
+        elif data['label'].nunique() == 1:
+            return data['label'].iloc[0]
+        else:
+            return data['label'].mean()
+
 
     def entropy(self, data):
         total = len(data)
@@ -59,11 +70,11 @@ class DecisionTree:
 
     def get_value(self, data, feature):
         unique_values = sorted(list(data[feature].unique()))
-        # print('unique values:', unique_values)
+        possible_splits = [(unique_values[i] + unique_values[i+1]) / 2 for i in range(len(unique_values) - 1)]
         best_gain = -float('inf')
         best_value = None
         original_entropy = self.entropy(data['label'])
-        for value in unique_values:
+        for value in possible_splits:
             split1 = data[data[feature] <= value]
             split2 = data[data[feature] > value]
             total_weighted_entropy = sum((len(split) / len(data) * self.entropy(split['label'])) for split in [split1, split2])
@@ -71,49 +82,23 @@ class DecisionTree:
             if gain > best_gain:
                 best_gain = gain
                 best_value = value
-        # print('best value:', best_value)
-        # print()
         return best_value
-
-    def build_tree_recursive(self, data, depth=0):
-        if len(data['label'].unique()) == 1:
-            return self.Node(result=data['label'].iloc[0])
-
-        if depth == self.max_depth:
-            return self.Node(result=data['label'].value_counts().idxmax())
-
-
-        if self.lm:
-            prompt = self.create_prompt(data, self.root, 0, None, current_node)
-            feature_response = self.chat(prompt)
-            feature_response = self.parse_response(prompt)
-        else:
-            best_feature = self.get_feature(data)
-            if best_feature is None:
-                return self.Node(result=data['label'].value_counts().idxmax())
-
-        best_value = self.get_value(data, best_feature)
-        left_data = data[data[best_feature] <= best_value]
-        right_data = data[data[best_feature] > best_value]
-
-        # if len(left_data) == 0 or len(right_data) == 0:
-        #     return self.Node(result=data['label'].value_counts().idxmax())
-
-        left_tree = self.build_tree_recursive(left_data, depth+1)
-        right_tree = self.build_tree_recursive(right_data, depth+1)
-        return self.Node(feature=best_feature, value=best_value, left=left_tree, right=right_tree)
+    
     
     def build_tree_iterative(self, data):
         self.root = self.Node()
         stack = [(self.root, data, 0)]
         while stack:
             current_node, current_data, current_depth = stack.pop()
+            current_node.dist = (current_data['label'].value_counts()).to_dict()
             # Base cases
             if len(current_data['label'].unique()) == 1:
                 current_node.result = current_data['label'].iloc[0]
+                current_node.proba = self.get_proba(current_data)
                 continue
             if current_depth == self.max_depth:
                 current_node.result = current_data['label'].value_counts().idxmax()
+                current_node.proba = self.get_proba(current_data)
                 continue
             # Feature selection
             if self.lm:
@@ -152,11 +137,22 @@ class DecisionTree:
         
         if node.result is not None:
             return node.result
-        # print(node.feature, node.value)
         if test_point[node.feature] <= node.value:
             return self.predict(test_point, node.left)
         else:
             return self.predict(test_point, node.right)
+        
+    def predict_proba(self, test_point, node=None):
+        if node is None:
+            node = self.root
+
+        if node.proba is not None:
+            return node.proba
+        if test_point[node.feature] <= node.value:
+            return self.predict_proba(test_point, node.left)
+        else:
+            return self.predict_proba(test_point, node.right)
+
             
     def print_tree(self, node=None, depth=0, buffer=None, current_node=None):
         buffer = buffer or []
@@ -174,8 +170,11 @@ class DecisionTree:
         else:
             if node.feature is not None:
                 buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}"))
+                # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + f" Distribution: {node.dist}"))
+
                 self.print_tree(node.left, depth+2, buffer, current_node)
                 buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}"))
+                # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + f" Distribution: {node.dist}"))
                 self.print_tree(node.right, depth+2, buffer, current_node)
             else:
                 buffer.append((' ' * depth + highlight + "Split on ?"))
@@ -197,7 +196,9 @@ class DecisionTree:
     def create_prompt(self, data, node, depth, buffer=None, current=None):
         # Construct the tree's current state
         tree_state = self.print_tree(node, depth, buffer, current)
-        # This is just an example, you can construct the prompt based on your requirement
+        # print(tree_state)
+        # print()
+        # print()
         prompt = ''
         prompt += 'You are trying to classify {}.'.format(self.classification_task)
         prompt += '\n'
@@ -220,11 +221,13 @@ class DecisionTree:
 
 class GPT():
     def __init__(self):
-        self.api_key = os.environ['OPENAI_API_KEY']
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+        self.api_key = os.getenv('OPENAI_API_KEY')
         self.model = 'gpt-3.5-turbo'
 
     def __call__(self, prompt, **kwargs):
         # This is just an example, you can construct the prompt based on your requirement
         messages = [{'role': 'user', 'content': prompt}]
-        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs)
+        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs, temperature=0)
         return response.choices[0].message['content']
