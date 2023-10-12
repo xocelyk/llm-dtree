@@ -4,7 +4,7 @@ import openai
 import os
 
 task_factory = {
-    'housing': "whether the median price of a housing block is greater than $200,000",
+    'housing': "whether the median price of homes in a housing block is greater than $200,000",
     'medical': "whether a person in this hospital died",
     'titanic': 'whether a passenger on the Titanic survived',
     'weather': 'whether a city is in North America based on its weather patterns',
@@ -37,7 +37,7 @@ class DecisionTree:
         if len(data) == 0:
             return 0
         elif data['label'].nunique() == 1:
-            return data['label'].iloc[0]
+            return np.clip(data['label'].iloc[0], .01, .99)
         else:
             return data['label'].mean()
 
@@ -82,7 +82,10 @@ class DecisionTree:
             if gain > best_gain:
                 best_gain = gain
                 best_value = value
-        return best_value
+        if best_value is None:
+            return None
+        else:
+            return round(best_value, 3)
     
     
     def build_tree_iterative(self, data):
@@ -106,8 +109,13 @@ class DecisionTree:
                 while check == False:
                     try:
                         prompt = self.create_prompt(data, self.root, 0, None, current_node)
+                        print(prompt)
+                        print()
                         feature_response = self.chat(prompt)
+                        print(feature_response)
                         best_feature = self.parse_response(feature_response)
+                        print()
+                        print()
                         assert best_feature in data.columns
                         check = True
                     except:
@@ -229,5 +237,5 @@ class GPT():
     def __call__(self, prompt, **kwargs):
         # This is just an example, you can construct the prompt based on your requirement
         messages = [{'role': 'user', 'content': prompt}]
-        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs, temperature=0)
+        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs, temperature=0.1)
         return response.choices[0].message['content']
