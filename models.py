@@ -12,16 +12,19 @@ task_factory = {
     'abalone': 'whether an abalone is over 11 years old based on its physical properties',
     'glass': 'whether a piece of glass was manufactured for building windows or vehicle windows based on its chemical properties',
     'diabetes': 'whether a person has diabetes based on certain diagnostic measurements',
+    'mushroom': 'whether a mushroom is poisonous',
+    'adult': "whether an individual's income is greater than $50,000",
 }
 
 class DecisionTree:
-    def __init__(self, training_data, max_depth, task_name, lm=False):
+    def __init__(self, training_data, max_depth, task_name, lm=False, verbose=False):
         self.training_data = training_data
+        self.data_type_map = self.get_data_type_map(training_data)
         self.max_depth = max_depth
         self.lm = lm
         self.classification_task = task_factory[task_name]
         self.chat = GPT()
-        self.root = self.build_tree_iterative(self.training_data)
+        self.root = self.build_tree_iterative(self.training_data, verbose=verbose)
 
     class Node:
         def __init__(self, feature=None, value=None, left=None, right=None, result=None, proba=None):
@@ -31,6 +34,19 @@ class DecisionTree:
             self.right = right
             self.result = result
             self.proba = proba
+
+    @staticmethod
+    def get_data_type_map(df):
+        data_type_map = {}
+        for feature in df.columns:
+            # Check data type of the column
+            dtype = df[feature].dtype
+            if np.issubdtype(dtype, np.number):
+                data_type_map[feature] = 'numerical'
+            else:
+                data_type_map[feature] = 'categorical'
+        return data_type_map
+
 
     def get_proba(self, data):
         # proba is proportion of data that has label 1
@@ -53,6 +69,10 @@ class DecisionTree:
         original_entropy = self.entropy(data['label'])
         best_gain = 0
         best_feature = None
+        # if all labels are the same,
+        #  return the first feature
+        # TODO: why does this happen?
+        assert data['label'].nunique() > 1, data.head()
         if data['label'].nunique() == 1:
             return None
         for feature in data.columns:
@@ -69,7 +89,15 @@ class DecisionTree:
         return best_feature
 
     def get_value(self, data, feature):
+        if self.data_type_map[feature] == 'numerical':
+            return self.get_value_numerical(data, feature)
+        else:
+            return self.get_value_categorical(data, feature)
+
+    def get_value_numerical(self, data, feature):
         unique_values = sorted(list(data[feature].unique()))
+        if len(unique_values) == 1:
+            return 0
         possible_splits = [(unique_values[i] + unique_values[i+1]) / 2 for i in range(len(unique_values) - 1)]
         best_gain = -float('inf')
         best_value = None
@@ -86,9 +114,23 @@ class DecisionTree:
             return None
         else:
             return round(best_value, 3)
+        
+    def get_value_categorical(self, data, feature):
+        unique_values = data[feature].unique()
+        best_gain = -float('inf')
+        best_value = None
+        original_entropy = self.entropy(data['label'])
+        for value in unique_values:
+            split1 = data[data[feature] == value]
+            split2 = data[data[feature] != value]
+            total_weighted_entropy = sum((len(split) / len(data) * self.entropy(split['label'])) for split in [split1, split2])
+            gain = original_entropy - total_weighted_entropy
+            if gain > best_gain:
+                best_gain = gain
+                best_value = value
+        return best_value
     
-    
-    def build_tree_iterative(self, data):
+    def build_tree_iterative(self, data, verbose=False):
         self.root = self.Node()
         stack = [(self.root, data, 0)]
         while stack:
@@ -109,33 +151,46 @@ class DecisionTree:
                 while check == False:
                     try:
                         prompt = self.create_prompt(data, self.root, 0, None, current_node)
-                        print(prompt)
-                        print()
+                        if verbose:
+                            print(prompt)
+                            print()
                         feature_response = self.chat(prompt)
-                        print(feature_response)
+                        if verbose:
+                            print(feature_response)
+                            print()
+                            print()
                         best_feature = self.parse_response(feature_response)
-                        print()
-                        print()
                         assert best_feature in data.columns
                         check = True
                     except:
+                        print(feature_response)
                         print('retry')
                         continue
             else:
                 best_feature = self.get_feature(current_data)
+            assert best_feature in data.columns
+            assert best_feature is not None
             best_value = self.get_value(current_data, best_feature)
-            left_data = current_data[current_data[best_feature] <= best_value]
-            right_data = current_data[current_data[best_feature] > best_value]
+            if self.data_type_map[best_feature] == 'numerical':
+                left_data = current_data[current_data[best_feature] <= best_value]
+                right_data = current_data[current_data[best_feature] > best_value]
+            else:
+                left_data = current_data[current_data[best_feature] == best_value]
+                right_data = current_data[current_data[best_feature] != best_value]
+            if len(left_data) == 0 or len(right_data) == 0:
+                current_node.result = current_data['label'].value_counts().idxmax()
+                current_node.proba = self.get_proba(current_data)
+                continue
    
             # Update current node and push children to stack
             current_node.feature = best_feature
             current_node.value = best_value
+            assert current_node.feature is not None
+            assert current_node.value is not None
             current_node.left = self.Node()
+            stack.append((current_node.left, left_data, current_depth + 1))
             current_node.right = self.Node()
-            if len(left_data) > 0:
-                stack.append((current_node.left, left_data, current_depth + 1))
-            if len(right_data) > 0:
-                stack.append((current_node.right, right_data, current_depth + 1))
+            stack.append((current_node.right, right_data, current_depth + 1))
         return self.root
 
 
@@ -145,10 +200,18 @@ class DecisionTree:
         
         if node.result is not None:
             return node.result
-        if test_point[node.feature] <= node.value:
-            return self.predict(test_point, node.left)
+        if node.feature is None:
+            print(self.print_tree())
+        if self.data_type_map[node.feature] == 'numerical':
+            if test_point[node.feature] <= node.value:
+                return self.predict(test_point, node.left)
+            else:
+                return self.predict(test_point, node.right)
         else:
-            return self.predict(test_point, node.right)
+            if test_point[node.feature] == node.value:
+                return self.predict(test_point, node.left)
+            else:
+                return self.predict(test_point, node.right)
         
     def predict_proba(self, test_point, node=None):
         if node is None:
@@ -156,10 +219,18 @@ class DecisionTree:
 
         if node.proba is not None:
             return node.proba
-        if test_point[node.feature] <= node.value:
-            return self.predict_proba(test_point, node.left)
+        
+        if self.data_type_map[node.feature] == 'numerical':
+            if test_point[node.feature] <= node.value:
+                return self.predict_proba(test_point, node.left)
+            else:
+                return self.predict_proba(test_point, node.right)
         else:
-            return self.predict_proba(test_point, node.right)
+            if test_point[node.feature] == node.value:
+                return self.predict_proba(test_point, node.left)
+            else:
+                return self.predict_proba(test_point, node.right)
+
 
             
     def print_tree(self, node=None, depth=0, buffer=None, current_node=None):
@@ -177,13 +248,22 @@ class DecisionTree:
             buffer.append((' ' * depth + highlight + f"Result: {node.result}"))
         else:
             if node.feature is not None:
-                buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}"))
-                # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + f" Distribution: {node.dist}"))
+                if self.data_type_map[node.feature] == 'numerical':
+                    buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + f" Distribution: {node.dist}"))
 
-                self.print_tree(node.left, depth+2, buffer, current_node)
-                buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}"))
-                # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + f" Distribution: {node.dist}"))
-                self.print_tree(node.right, depth+2, buffer, current_node)
+                    self.print_tree(node.left, depth+2, buffer, current_node)
+                    buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + f" Distribution: {node.dist}"))
+                    self.print_tree(node.right, depth+2, buffer, current_node)
+                else:
+                    buffer.append((' ' * depth + highlight + f"{node.feature} == {node.value}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + f" Distribution: {node.dist}"))
+
+                    self.print_tree(node.left, depth+2, buffer, current_node)
+                    buffer.append((' ' * depth + highlight + f"{node.feature} != {node.value}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + f" Distribution: {node.dist}"))
+                    self.print_tree(node.right, depth+2, buffer, current_node)
             else:
                 buffer.append((' ' * depth + highlight + "Split on ?"))
 
@@ -215,7 +295,7 @@ class DecisionTree:
         prompt += '\n'
         prompt += 'Consider which features you think are most important to the classification task. If the feature has already been used in the decision tree, you should be less likely to use it again.'
         prompt += '\n'
-        prompt += 'Explain you reasoning in one or two sentences, and then provide the feature name. Make sure the feature name matches one of the features contained in the feature list. Your response should end with "Feature: <feature>". If you do not follow the response format, someone will die.'
+        prompt += 'Explain you reasoning in one or two sentences, and then provide the feature name. Make sure the feature name matches one of the features contained in the feature list. Your response should end with "Feature: <feature>". If you do not follow the response format, something bad will happen.'
         return prompt
     
     def list_features(self, features=[], node='root'):
