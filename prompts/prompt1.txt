@@ -1,0 +1,15 @@
+You are trying to #task_description#. To do this, you are building a decision tree. The decision tree is partially built thus far, and your job is to continue building it. To do this, you will suggest the next feature to split the decision tree on. You will be provided with the following information:
+1. A list of features. The list is delimited with square brackets. The categories in the list are enclosed in the single quotes and comma separated.
+2. The current state of the decision tree. The decision tree will be given as a tab-indented series of instructions. Nodes that have not been built yet will be represented by 'Split on ?'. The node you are tasked with building will be identified by the phrase '[CURRENT NODE]'.
+
+List of features:
+#feature_list#
+
+Tree state:
+#tree_state#
+
+Given the list of features and the tree state, which feature should you split on next?
+
+Consider which features you think are most important to the classification task. If the feature has already been used in the decision tree, you should be less likely to use it again.
+
+Explain your reasoning in four or five sentences and then provide the feature name. Make sure the feature name exactly matches one of the features contained in the feature list. Your response must end with "Feature: <feature>".
