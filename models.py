@@ -24,10 +24,10 @@ class Node:
         self.right = right
         self.result = result
         self.proba = proba
+        self.is_leaf = self.result is not None
 
 class DecisionTree:
     def __init__(self, training_data, max_depth, task_name, lm=False, verbose=False, prompt_num=1):
-        self.prompt_num = prompt_num
         self.training_data = training_data
         self.feature_importance = {}
         self.data_type_map = self.get_data_type_map(training_data)
@@ -35,6 +35,7 @@ class DecisionTree:
         self.lm = lm
         self.classification_task = task_factory[task_name]
         self.chat = GPT()
+        self.prompt_num = prompt_num
         self.root = self.build_tree_iterative(self.training_data, verbose=verbose)
 
     @staticmethod
@@ -139,7 +140,7 @@ class DecisionTree:
         return best_value
     
     def build_tree_iterative(self, data, verbose=False):
-        self.root = self.Node()
+        self.root = Node()
         stack = [(self.root, data, 0)]
         while stack:
             current_node, current_data, current_depth = stack.pop()
@@ -159,23 +160,20 @@ class DecisionTree:
                 while check == False:
                     try:
                         prompt = self.create_prompt(data, self.root, 0, None, current_node)
+                        # print(prompt)
                         if verbose:
                             print(prompt)
                             print()
                         feature_response = self.chat(prompt)
-                        print(feature_response)
-                        print()
-                        print()
                         if verbose:
                             print(feature_response)
                             print()
                             print()
-                        # print(feature_response)
                         best_feature = self.parse_response(feature_response)
                         assert best_feature in data.columns
                         check = True
                     except:
-                        # print('retry')
+                        print('retry')
                         continue
             else:
                 best_feature = self.get_feature(current_data)
@@ -198,9 +196,9 @@ class DecisionTree:
             current_node.value = best_value
             assert current_node.feature is not None
             assert current_node.value is not None
-            current_node.left = self.Node()
+            current_node.left = Node()
             stack.append((current_node.left, left_data, current_depth + 1))
-            current_node.right = self.Node()
+            current_node.right = Node()
             stack.append((current_node.right, right_data, current_depth + 1))
         # normalize feature_importances
         self.feature_importance = {k: v / sum(self.feature_importance.values()) for k, v in self.feature_importance.items()}
@@ -293,25 +291,24 @@ class DecisionTree:
         response = response.replace(".", "")
         return response
 
+    def read_prompt(self, filename):
+        with open(filename, 'r') as f:
+            prompt = f.read()
+        return prompt
+    
+    def add_parameters_to_prompt(self, prompt, **kwargs):
+        for key, value in kwargs.items():
+            prompt = prompt.replace(f"#{key}#", str(value))
+        return prompt
 
     def create_prompt(self, data, node, depth, buffer=None, current=None):
         # Construct the tree's current state
+        filename = f'prompts/prompt{self.prompt_num}.txt'
+        task_description = self.classification_task
+        feature_list = [col for col in list(data.columns) if col != 'label']
         tree_state = self.print_tree(node, depth, buffer, current)
-        # print(tree_state)
-        # print()
-        # print()
-        prompt = ''
-        prompt += 'You are trying to classify {}.'.format(self.classification_task)
-        prompt += '\n'
-        prompt += f"You are given a dataset with features {[col for col in list(data.columns) if col != 'label']} and the current tree state:\n{tree_state}\n"
-        prompt += f"Given these, Which feature should we split on next?"
-        prompt += '\n'
-        prompt += 'Consider which features you think are most important to the classification task. If the feature has already been used in the decision tree, you should be less likely to use it again.'
-        prompt += '\n'
-        if self.prompt_num == 1:
-            prompt += 'Explain your reasoning in one or two sentences and then provide the feature name. Make sure the feature name matches one of the features contained in the feature list. Your response should end with "Feature: <feature>". If you do not follow the response format, something bad will happen.'
-        elif self.prompt_num == 2:
-            prompt += 'Explain your reasoning in four or five sentences and then provide the feature name. Make sure the feature name matches one of the features contained in the feature list. Your response should end with "Feature: <feature>". If you do not follow the response format, something bad will happen.'
+        prompt_template = self.read_prompt(filename)
+        prompt = self.add_parameters_to_prompt(prompt_template, task_description=task_description, feature_list=feature_list, tree_state=tree_state)
         return prompt
     
     def list_features(self, features=[], node='root'):
@@ -333,30 +330,32 @@ class GPT():
     def __call__(self, prompt, **kwargs):
         # This is just an example, you can construct the prompt based on your requirement
         messages = [{'role': 'user', 'content': prompt}]
-        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs, temperature=0.1)
+        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs, temperature=0)
         return response.choices[0].message['content']
 
 
 class Forest():
-    def __init__(self, data, num_trees, max_depth, task_name, lm=False):
+    def __init__(self, data, num_trees, max_depth, task_name, sample_frac=1, lm=False):
         self.data = data
         self.num_trees = num_trees
         self.max_depth = max_depth
         self.task_name = task_name
+        self.sample_frac = sample_frac
         self.data_type_map = None
         self.classification_task = None
-        self.prompt_num = None
         self.lm = lm
         self.gpt = GPT()
         self.trees = self.build_trees()
 
     def build_single_tree(self, training_data):
         tree = DecisionTree(training_data, max_depth=self.max_depth, task_name=self.task_name, lm=self.lm)
-        return tree.root
+        return tree
 
-    def build_trees(self, sample_frac=.9):
+    def build_trees(self):
+        sample_frac = self.sample_frac
         trees = []
-        for i in range(self.num_trees):
+        for _ in range(self.num_trees):
+            print(f'Building tree {_+1} of {self.num_trees}', end='\r')
             sample = self.data.sample(frac=sample_frac)
             trees.append(self.build_single_tree(sample))
         return trees
@@ -395,29 +394,31 @@ class Forest():
         '10': left child of right child of root
         '11': right child of right child of root
         '''
-        results = {'left': [], 'right': [], 'isNone': 0, 'isLeaf': 0}
-        for root in trees:
+        results = []
+        for tree in trees:
+            root = tree.root
             node = self.get_node_from_position(position, root)
-            if node is None:
-                results['isNone'] += 1
-                results['left'].append(None)
-                results['right'].append(None)
-            elif node.is_leaf():
-                results['isLeaf'] += 1
-                results['left'].append(None)
-                results['right'].append(None)
+            assert node is not None
+            if node.is_leaf:
+                results.append(None)
             else:
-                results['left'].append(node.left)
-                results['right'].append(node.right)
-        return results
-    
+                results.append(node.feature)
+        return {feature: results.count(feature) / len(results) for feature in set(results)}
 
-    def get_prob_next_nodes_conditioned_on_feature(self, position, feature):
-        sample_trees = []
-        for root in self.trees:
-            if self.get_node_from_position(position, root).feature == feature:
-                sample_trees.append(root)
-        return self.get_prob_next_nodes(position, sample_trees)
+    def get_prob_next_nodes_conditioned_on_features(self, position_feature_dict: dict, test_position) -> dict:
+        '''
+        Conditions the trees based on the features and positions given.
+        Then returns the probability of the next nodes at a given position.
+        '''
+        position_feature_lst = sorted(list(position_feature_dict.items()), key=lambda x: len(x[0]))
+        sample_trees = self.trees.copy()
+        for position, feature in position_feature_lst:
+            new_sample_trees = []
+            for tree in sample_trees:
+                if self.get_node_from_position(position, tree.root).feature == feature:
+                    new_sample_trees.append(tree)
+            sample_trees = new_sample_trees
         
-
+        return self.get_prob_next_nodes(test_position, sample_trees)
+        
     
