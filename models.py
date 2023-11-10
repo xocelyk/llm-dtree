@@ -4,16 +4,16 @@ import openai
 import os
 
 task_factory = {
-    'housing': "whether the median price of homes in a housing block is greater than $200,000",
-    'medical': "whether a person in this hospital died",
-    'titanic': 'whether a passenger on the Titanic survived',
-    'weather': 'whether a city is in North America based on its weather patterns',
-    'wine': 'whether a wine is of high quality based on its chemical properties',
-    'abalone': 'whether an abalone is over 11 years old based on its physical properties',
-    'glass': 'whether a piece of glass was manufactured for building windows or vehicle windows based on its chemical properties',
-    'diabetes': 'whether a person has diabetes based on certain diagnostic measurements',
-    'mushroom': 'whether a mushroom is poisonous',
-    'adult': "whether an individual's income is greater than $50,000",
+    'housing': "if the median price of homes in a housing block is greater than $200,000",
+    'medical': "if a person in this hospital died",
+    'titanic': 'if a passenger on the Titanic survived',
+    'weather': 'if a city is in North America based on its weather patterns',
+    'wine': 'if a wine is of high quality based on its chemical properties',
+    'abalone': 'if an abalone is over 11 years old based on its physical properties',
+    'glass': 'if a piece of glass was manufactured for building windows or vehicle windows based on its chemical properties',
+    'diabetes': 'if a person has diabetes based on certain diagnostic measurements',
+    'mushroom': 'if a mushroom is poisonous',
+    'adult': "if an individual's income is greater than $50,000",
 }
 
 class Node:
@@ -24,18 +24,24 @@ class Node:
         self.right = right
         self.result = result
         self.proba = proba
+        self.dist = None
         self.is_leaf = self.result is not None
 
 class DecisionTree:
-    def __init__(self, training_data, max_depth, task_name, lm=False, verbose=False, prompt_num=1):
+    def __init__(self, training_data, max_depth, task_name, lm=False, verbose=False, prompt_num=1, temperature=0.7):
         self.training_data = training_data
+        self.classification_task = task_factory[task_name]
         self.feature_importance = {}
         self.data_type_map = self.get_data_type_map(training_data)
         self.max_depth = max_depth
         self.lm = lm
-        self.classification_task = task_factory[task_name]
-        self.chat = GPT()
-        self.prompt_num = prompt_num
+        if not self.lm:
+            self.prompt_num = None
+            self.temperature = None
+            self.chat = None
+        else:
+            self.chat = GPT(temperature=temperature)
+            self.prompt_num = prompt_num
         self.root = self.build_tree_iterative(self.training_data, verbose=verbose)
 
     @staticmethod
@@ -56,7 +62,7 @@ class DecisionTree:
         if len(data) == 0:
             return 0
         elif data['label'].nunique() == 1:
-            return np.clip(data['label'].iloc[0], .01, .99)
+            return np.clip(data['label'].iloc[0], .1, .9)
         else:
             return data['label'].mean()
 
@@ -155,12 +161,12 @@ class DecisionTree:
                 current_node.proba = self.get_proba(current_data)
                 continue
             # Feature selection
+            retry_limit = 5
             if self.lm:
-                check = False
-                while check == False:
+                valid_response = False
+                while valid_response == False:
                     try:
                         prompt = self.create_prompt(data, self.root, 0, None, current_node)
-                        # print(prompt)
                         if verbose:
                             print(prompt)
                             print()
@@ -171,9 +177,12 @@ class DecisionTree:
                             print()
                         best_feature = self.parse_response(feature_response)
                         assert best_feature in data.columns
-                        check = True
+                        valid_response = True
                     except:
-                        print('retry')
+                        print(f'Retrying. Retries left: {retry_limit-1}')
+                        retry_limit -= 1
+                        if retry_limit == 0:
+                            raise ValueError('retry limit exceeded')
                         continue
             else:
                 best_feature = self.get_feature(current_data)
@@ -203,7 +212,6 @@ class DecisionTree:
         # normalize feature_importances
         self.feature_importance = {k: v / sum(self.feature_importance.values()) for k, v in self.feature_importance.items()}
         return self.root
-
 
     def predict(self, test_point, node=None):
         if node is None:
@@ -242,8 +250,7 @@ class DecisionTree:
             else:
                 return self.predict_proba(test_point, node.right)
 
-
-            
+   
     def print_tree(self, node=None, depth=0, buffer=None, current_node=None):
         buffer = buffer or []
 
@@ -261,22 +268,23 @@ class DecisionTree:
             if node.feature is not None:
                 if self.data_type_map[node.feature] == 'numerical':
                     buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}"))
-                    # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + f" Distribution: {node.dist}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + ',' + f" Distribution: {node.dist}"))
 
                     self.print_tree(node.left, depth+2, buffer, current_node)
                     buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}"))
-                    # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + f" Distribution: {node.dist}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + ',' + f" Distribution: {node.dist}"))
                     self.print_tree(node.right, depth+2, buffer, current_node)
                 else:
                     buffer.append((' ' * depth + highlight + f"{node.feature} == {node.value}"))
-                    # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + f" Distribution: {node.dist}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} <= {node.value}" + ',' + f" Distribution: {node.dist}"))
 
                     self.print_tree(node.left, depth+2, buffer, current_node)
                     buffer.append((' ' * depth + highlight + f"{node.feature} != {node.value}"))
-                    # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + f" Distribution: {node.dist}"))
+                    # buffer.append((' ' * depth + highlight + f"{node.feature} > {node.value}" + ',' + f" Distribution: {node.dist}"))
                     self.print_tree(node.right, depth+2, buffer, current_node)
             else:
                 buffer.append((' ' * depth + highlight + "Split on ?"))
+                # buffer.append((' ' * depth + highlight + "Split on ?" + ',' + f" Distribution: {node.dist}"))
 
         return '\n'.join(buffer)
 
@@ -321,16 +329,17 @@ class DecisionTree:
 
 
 class GPT():
-    def __init__(self):
+    def __init__(self, temperature=0.7):
         from dotenv import load_dotenv
         load_dotenv(override=True)
         self.api_key = os.getenv('OPENAI_API_KEY')
         self.model = 'gpt-3.5-turbo'
+        self.temperature = temperature
 
     def __call__(self, prompt, **kwargs):
         # This is just an example, you can construct the prompt based on your requirement
         messages = [{'role': 'user', 'content': prompt}]
-        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs, temperature=0)
+        response = openai.ChatCompletion.create(messages=messages, model=self.model, api_key=self.api_key, **kwargs, temperature=self.temperature)
         return response.choices[0].message['content']
 
 
