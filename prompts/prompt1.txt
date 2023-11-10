@@ -12,4 +12,4 @@ Given the list of features and the tree state, which feature should you split on
 
 Consider which features you think are most important to the classification task. If the feature has already been used in the decision tree, you should be less likely to use it again.
 
-Explain your reasoning in four or five sentences and then provide the feature name. Make sure the feature name exactly matches one of the features contained in the feature list. Your response must end with "Feature: <feature>".
+Explain your reasoning in two or three sentences and then provide the feature name. Make sure the feature name exactly matches one of the features contained in the feature list. Your response must end with "Feature: <feature>".
